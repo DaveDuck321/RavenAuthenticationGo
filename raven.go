@@ -115,21 +115,22 @@ func (auth *authenticator) setAuthenticationCookie(identity RavenIdentity, w htt
 	})
 }
 
-func (auth *authenticator) HandleRavenAuthenticator(url string) {
+func (auth *authenticator) HandleRavenAuthenticator(url string, handler func(RavenIdentity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
 	http.HandleFunc(url, func(w http.ResponseWriter, r *http.Request) {
 		identity, err := auth.getRavenInfo(r)
 		if err != nil {
 			//Permission denied
+			failed(w, r)
 			return
 		}
 		auth.setAuthenticationCookie(identity, w, r)
-		//Permission granted
+		handler(identity, w, r)
 	})
 }
 
 func (auth *authenticator) AuthoriseAndHandle(url string, handler func(RavenIdentity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
 	http.HandleFunc(url, func(w http.ResponseWriter, r *http.Request) {
-		if identity, err := auth.isAuthorised(r); err != nil {
+		if identity, err := auth.isAuthorised(r); err == nil {
 			handler(identity, w, r)
 			return
 		}
