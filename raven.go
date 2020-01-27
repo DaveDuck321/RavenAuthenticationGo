@@ -1,4 +1,4 @@
-package main
+package raven
 
 import (
 	"bytes"
@@ -16,7 +16,11 @@ import (
 	"time"
 )
 
-type User struct {
+type RavenIdentity struct {
+	crsID string
+}
+
+type user struct {
 	crsID        string
 	lastVerified time.Time
 	uniqueCookie []byte
@@ -24,7 +28,7 @@ type User struct {
 
 type authenticator struct {
 	key   *rsa.PublicKey
-	users map[string]User
+	users map[string]user
 }
 
 func getRSAKey(file string) (*rsa.PublicKey, error) {
@@ -46,53 +50,52 @@ func verifyViaRSA(key *rsa.PublicKey, messageStr, signatureStr string) bool {
 	return rsa.VerifyPKCS1v15(key, crypto.SHA1, messageHash[:], signatureData) == nil
 }
 
-func (auth *authenticator) isAuthorised(r *http.Request) bool {
+func (auth *authenticator) isAuthorised(r *http.Request) (RavenIdentity, error) {
 	crsID, err := r.Cookie("crsID")
 	if err != nil {
-		fmt.Println("crsID not found!")
-		return false
+		return RavenIdentity{}, fmt.Errorf("no crsid")
 	}
 	uniqueCookie, err := r.Cookie("authIdentity")
 	if err != nil {
-		fmt.Println("authIdentity not found!")
-		return false
+		return RavenIdentity{}, fmt.Errorf("no authIdentity found")
 	}
 	uniqueBytes, err := base64.StdEncoding.DecodeString(uniqueCookie.Value)
 	if err != nil {
-		fmt.Println("Invalid base64 encoding!")
-		return false
+		return RavenIdentity{}, fmt.Errorf("invalid base64 encoding")
 	}
 	if user, ok := auth.users[crsID.Value]; ok {
 		//Random bytes are equal
-		return bytes.Equal(user.uniqueCookie, uniqueBytes)
+		if bytes.Equal(user.uniqueCookie, uniqueBytes) {
+			return RavenIdentity{crsID.Value}, nil
+		}
 	}
-	return false
+	return RavenIdentity{}, fmt.Errorf("failed authenticity check")
 }
 
-func (auth *authenticator) getRavenInfo(r *http.Request) (string, error) {
+func (auth *authenticator) getRavenInfo(r *http.Request) (RavenIdentity, error) {
 	values := r.URL.Query()
 	val, ok := values["WLS-Response"]
 	if !ok {
-		return "", fmt.Errorf("WLS-Response not found")
+		return RavenIdentity{}, fmt.Errorf("WLS-Response not found")
 	}
 	parts := strings.Split(val[0], "!")
 	if len(parts) != 14 {
-		return "", fmt.Errorf("Invalid length")
+		return RavenIdentity{}, fmt.Errorf("Invalid length")
 	}
 	url := strings.Join(parts[:11], "!") + "!"
 	if !verifyViaRSA(auth.key, url, parts[13]) {
-		return "", fmt.Errorf("Failed RSA check")
+		return RavenIdentity{}, fmt.Errorf("Failed RSA check")
 	}
-	return parts[6], nil
+	return RavenIdentity{parts[6]}, nil
 }
 
-func (auth *authenticator) setAuthenticationCookie(crsID string, w http.ResponseWriter, r *http.Request) {
+func (auth *authenticator) setAuthenticationCookie(identity RavenIdentity, w http.ResponseWriter, r *http.Request) {
 	//64 byte random number
 	uniqueCookie := make([]byte, 64)
 	rand.Read(uniqueCookie)
 
-	auth.users[crsID] = User{
-		crsID:        crsID,
+	auth.users[identity.crsID] = user{
+		crsID:        identity.crsID,
 		lastVerified: time.Now(),
 		uniqueCookie: uniqueCookie,
 	}
@@ -100,7 +103,7 @@ func (auth *authenticator) setAuthenticationCookie(crsID string, w http.Response
 	expiration := time.Now().Add(2 * 24 * time.Hour)
 	http.SetCookie(w, &http.Cookie{
 		Name:    "crsID",
-		Value:   crsID,
+		Value:   identity.crsID,
 		Expires: expiration,
 		Path:    "/",
 	})
@@ -114,23 +117,23 @@ func (auth *authenticator) setAuthenticationCookie(crsID string, w http.Response
 
 func (auth *authenticator) HandleRavenAuthenticator(url string) {
 	http.HandleFunc(url, func(w http.ResponseWriter, r *http.Request) {
-		crsID, err := auth.getRavenInfo(r)
+		identity, err := auth.getRavenInfo(r)
 		if err != nil {
 			//Permission denied
 			return
 		}
-		auth.setAuthenticationCookie(crsID, w, r)
+		auth.setAuthenticationCookie(identity, w, r)
 		//Permission granted
 	})
 }
 
-func (auth *authenticator) AuthoriseAndHandle(url string, handler func(w http.ResponseWriter, r *http.Request)) {
+func (auth *authenticator) AuthoriseAndHandle(url string, handler func(RavenIdentity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
 	http.HandleFunc(url, func(w http.ResponseWriter, r *http.Request) {
-		if !auth.isAuthorised(r) {
-			fmt.Println("Auth failed!")
+		if identity, err := auth.isAuthorised(r); err != nil {
+			handler(identity, w, r)
 			return
 		}
-		handler(w, r)
+		failed(w, r)
 	})
 }
 
@@ -141,6 +144,6 @@ func NewAuthenticator() authenticator {
 	}
 	return authenticator{
 		key,
-		make(map[string]User),
+		make(map[string]user),
 	}
 }
