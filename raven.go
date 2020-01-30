@@ -17,7 +17,7 @@ import (
 )
 
 type RavenIdentity struct {
-	crsID string
+	CrsID string
 }
 
 type user struct {
@@ -94,8 +94,8 @@ func (auth *authenticator) setAuthenticationCookie(identity RavenIdentity, w htt
 	uniqueCookie := make([]byte, 64)
 	rand.Read(uniqueCookie)
 
-	auth.users[identity.crsID] = user{
-		crsID:        identity.crsID,
+	auth.users[identity.CrsID] = user{
+		crsID:        identity.CrsID,
 		lastVerified: time.Now(),
 		uniqueCookie: uniqueCookie,
 	}
@@ -103,7 +103,7 @@ func (auth *authenticator) setAuthenticationCookie(identity RavenIdentity, w htt
 	expiration := time.Now().Add(2 * 24 * time.Hour)
 	http.SetCookie(w, &http.Cookie{
 		Name:    "crsID",
-		Value:   identity.crsID,
+		Value:   identity.CrsID,
 		Expires: expiration,
 		Path:    "/",
 	})
