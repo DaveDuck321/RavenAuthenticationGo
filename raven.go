@@ -16,19 +16,21 @@ import (
 	"time"
 )
 
-type RavenIdentity struct {
+// Identity uniquely represents a single raven user
+type Identity struct {
 	CrsID string
+}
+
+// Authenticator contains information required to verify a user's identity
+type Authenticator struct {
+	key   *rsa.PublicKey
+	users map[string]user
 }
 
 type user struct {
 	crsID        string
 	lastVerified time.Time
 	uniqueCookie []byte
-}
-
-type authenticator struct {
-	key   *rsa.PublicKey
-	users map[string]user
 }
 
 func getRSAKey(file string) (*rsa.PublicKey, error) {
@@ -50,46 +52,46 @@ func verifyViaRSA(key *rsa.PublicKey, messageStr, signatureStr string) bool {
 	return rsa.VerifyPKCS1v15(key, crypto.SHA1, messageHash[:], signatureData) == nil
 }
 
-func (auth *authenticator) isAuthorised(r *http.Request) (RavenIdentity, error) {
+func (auth *Authenticator) isAuthorised(r *http.Request) (Identity, error) {
 	crsID, err := r.Cookie("crsID")
 	if err != nil {
-		return RavenIdentity{}, fmt.Errorf("no crsid")
+		return Identity{}, fmt.Errorf("no crsid")
 	}
 	uniqueCookie, err := r.Cookie("authIdentity")
 	if err != nil {
-		return RavenIdentity{}, fmt.Errorf("no authIdentity found")
+		return Identity{}, fmt.Errorf("no authIdentity found")
 	}
 	uniqueBytes, err := base64.StdEncoding.DecodeString(uniqueCookie.Value)
 	if err != nil {
-		return RavenIdentity{}, fmt.Errorf("invalid base64 encoding")
+		return Identity{}, fmt.Errorf("invalid base64 encoding")
 	}
 	if user, ok := auth.users[crsID.Value]; ok {
 		//Random bytes are equal
 		if bytes.Equal(user.uniqueCookie, uniqueBytes) {
-			return RavenIdentity{crsID.Value}, nil
+			return Identity{crsID.Value}, nil
 		}
 	}
-	return RavenIdentity{}, fmt.Errorf("failed authenticity check")
+	return Identity{}, fmt.Errorf("failed authenticity check")
 }
 
-func (auth *authenticator) getRavenInfo(r *http.Request) (RavenIdentity, error) {
+func (auth *Authenticator) getRavenInfo(r *http.Request) (Identity, error) {
 	values := r.URL.Query()
 	val, ok := values["WLS-Response"]
 	if !ok {
-		return RavenIdentity{}, fmt.Errorf("WLS-Response not found")
+		return Identity{}, fmt.Errorf("WLS-Response not found")
 	}
 	parts := strings.Split(val[0], "!")
 	if len(parts) != 14 {
-		return RavenIdentity{}, fmt.Errorf("Invalid length")
+		return Identity{}, fmt.Errorf("Invalid length")
 	}
 	url := strings.Join(parts[:11], "!") + "!"
 	if !verifyViaRSA(auth.key, url, parts[13]) {
-		return RavenIdentity{}, fmt.Errorf("Failed RSA check")
+		return Identity{}, fmt.Errorf("Failed RSA check")
 	}
-	return RavenIdentity{parts[6]}, nil
+	return Identity{parts[6]}, nil
 }
 
-func (auth *authenticator) setAuthenticationCookie(identity RavenIdentity, w http.ResponseWriter, r *http.Request) {
+func (auth *Authenticator) setAuthenticationCookie(identity Identity, w http.ResponseWriter, r *http.Request) {
 	//64 byte random number
 	uniqueCookie := make([]byte, 64)
 	rand.Read(uniqueCookie)
@@ -115,7 +117,8 @@ func (auth *authenticator) setAuthenticationCookie(identity RavenIdentity, w htt
 	})
 }
 
-func (auth *authenticator) HandleRavenAuthenticator(url string, handler func(RavenIdentity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
+// HandleAuthenticationURL listens for and validates raven requests
+func (auth *Authenticator) HandleAuthenticationURL(url string, handler func(Identity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
 	http.HandleFunc(url, func(w http.ResponseWriter, r *http.Request) {
 		identity, err := auth.getRavenInfo(r)
 		if err != nil {
@@ -128,7 +131,8 @@ func (auth *authenticator) HandleRavenAuthenticator(url string, handler func(Rav
 	})
 }
 
-func (auth *authenticator) AuthoriseAndHandle(url string, handler func(RavenIdentity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
+// AuthoriseAndHandle ensures user has valid authentication cookies before handling request
+func (auth *Authenticator) AuthoriseAndHandle(url string, handler func(Identity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
 	http.HandleFunc(url, func(w http.ResponseWriter, r *http.Request) {
 		if identity, err := auth.isAuthorised(r); err == nil {
 			handler(identity, w, r)
@@ -138,12 +142,13 @@ func (auth *authenticator) AuthoriseAndHandle(url string, handler func(RavenIden
 	})
 }
 
-func NewAuthenticator() authenticator {
-	key, err := getRSAKey("keys/pubkey2")
+// NewAuthenticator loads Raven's RSA key from a file and enables authentication
+func NewAuthenticator(keyPath string) Authenticator {
+	key, err := getRSAKey(keyPath)
 	if err != nil {
 		panic("Error reading RSA key!")
 	}
-	return authenticator{
+	return Authenticator{
 		key,
 		make(map[string]user),
 	}
