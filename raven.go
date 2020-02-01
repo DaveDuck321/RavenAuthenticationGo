@@ -25,6 +25,8 @@ type Identity struct {
 type Authenticator struct {
 	key   *rsa.PublicKey
 	users map[string]user
+
+	cookieLife time.Duration
 }
 
 type user struct {
@@ -66,6 +68,9 @@ func (auth *Authenticator) isAuthorised(r *http.Request) (Identity, error) {
 		return Identity{}, fmt.Errorf("invalid base64 encoding")
 	}
 	if user, ok := auth.users[crsID.Value]; ok {
+		if time.Now().Sub(user.lastVerified) > auth.cookieLife {
+			return Identity{}, fmt.Errorf("expired cookie")
+		}
 		//Random bytes are equal
 		if bytes.Equal(user.uniqueCookie, uniqueBytes) {
 			return Identity{crsID.Value}, nil
@@ -102,7 +107,7 @@ func (auth *Authenticator) setAuthenticationCookie(identity Identity, w http.Res
 		uniqueCookie: uniqueCookie,
 	}
 
-	expiration := time.Now().Add(2 * 24 * time.Hour)
+	expiration := time.Now().Add(auth.cookieLife)
 	http.SetCookie(w, &http.Cookie{
 		Name:    "crsID",
 		Value:   identity.CrsID,
@@ -115,6 +120,11 @@ func (auth *Authenticator) setAuthenticationCookie(identity Identity, w http.Res
 		Expires: expiration,
 		Path:    "/",
 	})
+}
+
+// SetLifetime sets the time a user can remain authenticated after Raven verification
+func (auth *Authenticator) SetLifetime(duration time.Duration) {
+	auth.cookieLife = duration
 }
 
 // HandleAuthenticationURL listens for and validates raven requests
@@ -149,7 +159,9 @@ func NewAuthenticator(keyPath string) Authenticator {
 		panic("Error reading RSA key!")
 	}
 	return Authenticator{
-		key,
-		make(map[string]user),
+		key:   key,
+		users: make(map[string]user),
+
+		cookieLife: time.Hour * 24,
 	}
 }
