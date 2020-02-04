@@ -23,8 +23,9 @@ type Identity struct {
 
 // Authenticator contains information required to verify a user's identity
 type Authenticator struct {
-	key   *rsa.PublicKey
-	users map[string]user
+	hostname string
+	key      *rsa.PublicKey
+	users    map[string]user
 
 	cookieLife time.Duration
 }
@@ -34,6 +35,26 @@ type user struct {
 	lastVerified time.Time
 	uniqueCookie []byte
 }
+
+// https://github.com/cambridgeuniversity/UcamWebauth-protocol
+const (
+	ravenVersion   = 0
+	ravenStatus    = 1
+	ravenMessage   = 2
+	ravenIssue     = 3
+	ravenID        = 4
+	ravenURL       = 5
+	ravenPrincipal = 6
+	ravenPtags     = 7
+	ravenAuth      = 8
+	ravenSSO       = 9
+	ravenLife      = 10
+	ravenParams    = 11
+	ravenKeyID     = 12
+	ravenSignature = 13
+
+	ravenLength = 14
+)
 
 func getRSAKey(file string) (*rsa.PublicKey, error) {
 	r, _ := ioutil.ReadFile(file)
@@ -79,21 +100,22 @@ func (auth *Authenticator) isAuthorised(r *http.Request) (Identity, error) {
 	return Identity{}, fmt.Errorf("failed authenticity check")
 }
 
-func (auth *Authenticator) getRavenInfo(r *http.Request) (Identity, error) {
+func (auth *Authenticator) getRavenInfo(urlPath string, r *http.Request) (Identity, error) {
 	values := r.URL.Query()
 	val, ok := values["WLS-Response"]
 	if !ok {
 		return Identity{}, fmt.Errorf("WLS-Response not found")
 	}
 	parts := strings.Split(val[0], "!")
-	if len(parts) != 14 {
+	if len(parts) != ravenLength {
 		return Identity{}, fmt.Errorf("Invalid length")
 	}
-	url := strings.Join(parts[:11], "!") + "!"
-	if !verifyViaRSA(auth.key, url, parts[13]) {
+
+	url := strings.Join(parts[:ravenKeyID], "!")
+	if !verifyViaRSA(auth.key, url, parts[ravenSignature]) {
 		return Identity{}, fmt.Errorf("Failed RSA check")
 	}
-	return Identity{parts[6]}, nil
+	return Identity{parts[ravenPrincipal]}, nil
 }
 
 func (auth *Authenticator) setAuthenticationCookie(identity Identity, w http.ResponseWriter, r *http.Request) {
@@ -127,10 +149,10 @@ func (auth *Authenticator) SetLifetime(duration time.Duration) {
 	auth.cookieLife = duration
 }
 
-// HandleAuthenticationURL listens for and validates raven requests
-func (auth *Authenticator) HandleAuthenticationURL(url string, handler func(Identity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
-	http.HandleFunc(url, func(w http.ResponseWriter, r *http.Request) {
-		identity, err := auth.getRavenInfo(r)
+// HandleAuthenticationPath listens for and validates raven requests
+func (auth *Authenticator) HandleAuthenticationPath(urlPath string, handler func(Identity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
+	http.HandleFunc(urlPath, func(w http.ResponseWriter, r *http.Request) {
+		identity, err := auth.getRavenInfo(urlPath, r)
 		if err != nil {
 			//Permission denied
 			failed(w, r)
@@ -142,8 +164,8 @@ func (auth *Authenticator) HandleAuthenticationURL(url string, handler func(Iden
 }
 
 // AuthoriseAndHandle ensures user has valid authentication cookies before handling request
-func (auth *Authenticator) AuthoriseAndHandle(url string, handler func(Identity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
-	http.HandleFunc(url, func(w http.ResponseWriter, r *http.Request) {
+func (auth *Authenticator) AuthoriseAndHandle(urlPath string, handler func(Identity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
+	http.HandleFunc(urlPath, func(w http.ResponseWriter, r *http.Request) {
 		if identity, err := auth.isAuthorised(r); err == nil {
 			handler(identity, w, r)
 			return
@@ -153,14 +175,15 @@ func (auth *Authenticator) AuthoriseAndHandle(url string, handler func(Identity,
 }
 
 // NewAuthenticator loads Raven's RSA key from a file and enables authentication
-func NewAuthenticator(keyPath string) Authenticator {
+func NewAuthenticator(protocol string, hostname string, keyPath string) Authenticator {
 	key, err := getRSAKey(keyPath)
 	if err != nil {
 		panic("Error reading RSA key!")
 	}
 	return Authenticator{
-		key:   key,
-		users: make(map[string]user),
+		hostname: protocol + "://" + hostname,
+		key:      key,
+		users:    make(map[string]user),
 
 		cookieLife: time.Hour * 24,
 	}
