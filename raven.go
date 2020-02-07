@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -142,6 +143,20 @@ func (auth *Authenticator) setAuthenticationCookie(identity Identity, w http.Res
 		Expires: expiration,
 		Path:    "/",
 	})
+}
+
+// GetRavenLink returns a valid Raven url allowing users to authenticate
+func (auth *Authenticator) GetRavenLink(authPath string) string {
+	ravenRequest, _ := url.Parse("https://raven.cam.ac.uk/auth/authenticate.html")
+
+	q := ravenRequest.Query()
+	q.Add("ver", "3")
+	q.Add("url", auth.hostname+authPath)
+	q.Add("iact", "yes")
+
+	ravenRequest.RawQuery = q.Encode()
+
+	return ravenRequest.String()
 }
 
 // SetLifetime sets the time a user can remain authenticated after Raven verification
