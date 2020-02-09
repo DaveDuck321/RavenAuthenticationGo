@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -101,7 +102,7 @@ func (auth *Authenticator) isAuthorised(r *http.Request) (Identity, error) {
 	return Identity{}, fmt.Errorf("failed authenticity check")
 }
 
-func (auth *Authenticator) getRavenInfo(urlPath string, r *http.Request) (Identity, error) {
+func (auth *Authenticator) getRavenInfo(authPath string, r *http.Request) (Identity, error) {
 	values := r.URL.Query()
 	val, ok := values["WLS-Response"]
 	if !ok {
@@ -110,6 +111,20 @@ func (auth *Authenticator) getRavenInfo(urlPath string, r *http.Request) (Identi
 	parts := strings.Split(val[0], "!")
 	if len(parts) != ravenLength {
 		return Identity{}, fmt.Errorf("Invalid length")
+	}
+	if parts[ravenStatus] != "200" {
+		return Identity{}, fmt.Errorf("Authentication failed")
+	}
+	if path, _ := url.PathUnescape(parts[ravenURL]); path != auth.hostname+authPath {
+		// Raven requests need to be directed to the authentication url
+		return Identity{}, fmt.Errorf("Invalid url")
+	}
+
+	// Mad format string, kinda like RFC3339 without the separators
+	issueTime, _ := time.Parse("20060102T150405Z", parts[ravenIssue])
+	if math.Abs(time.Now().Sub(issueTime).Hours()) < 1 {
+		// Raven requests are valid for only one hour
+		return Identity{}, fmt.Errorf("Raven confirmation is old")
 	}
 
 	url := strings.Join(parts[:ravenKeyID], "!")
@@ -165,9 +180,9 @@ func (auth *Authenticator) SetLifetime(duration time.Duration) {
 }
 
 // HandleAuthenticationPath listens for and validates raven requests
-func (auth *Authenticator) HandleAuthenticationPath(urlPath string, handler func(Identity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
-	http.HandleFunc(urlPath, func(w http.ResponseWriter, r *http.Request) {
-		identity, err := auth.getRavenInfo(urlPath, r)
+func (auth *Authenticator) HandleAuthenticationPath(authPath string, handler func(Identity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
+	http.HandleFunc(authPath, func(w http.ResponseWriter, r *http.Request) {
+		identity, err := auth.getRavenInfo(authPath, r)
 		if err != nil {
 			//Permission denied
 			failed(w, r)
