@@ -18,6 +18,10 @@ import (
 	"time"
 )
 
+// AuthError is called on the event that raven authentication fails
+// Parameters provide details and http resourses for handling request
+type AuthError func(http.ResponseWriter, *http.Request, error)
+
 // Identity uniquely represents a single raven user
 type Identity struct {
 	CrsID string
@@ -180,27 +184,28 @@ func (auth *Authenticator) SetLifetime(duration time.Duration) {
 }
 
 // HandleAuthenticationPath listens for and validates raven requests
-func (auth *Authenticator) HandleAuthenticationPath(authPath string, handler func(Identity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
+func (auth *Authenticator) HandleAuthenticationPath(authPath string, handler func(Identity, http.ResponseWriter, *http.Request), failed AuthError) {
 	http.HandleFunc(authPath, func(w http.ResponseWriter, r *http.Request) {
 		identity, err := auth.getRavenInfo(authPath, r)
 		if err != nil {
-			//Permission denied
-			failed(w, r)
-			return
+			// Permission denied
+			failed(w, r, err)
+		} else {
+			auth.setAuthenticationCookie(identity, w, r)
+			handler(identity, w, r)
 		}
-		auth.setAuthenticationCookie(identity, w, r)
-		handler(identity, w, r)
 	})
 }
 
 // AuthoriseAndHandle ensures user has valid authentication cookies before handling request
-func (auth *Authenticator) AuthoriseAndHandle(urlPath string, handler func(Identity, http.ResponseWriter, *http.Request), failed func(http.ResponseWriter, *http.Request)) {
+func (auth *Authenticator) AuthoriseAndHandle(urlPath string, handler func(Identity, http.ResponseWriter, *http.Request), failed AuthError) {
 	http.HandleFunc(urlPath, func(w http.ResponseWriter, r *http.Request) {
 		if identity, err := auth.isAuthorised(r); err == nil {
 			handler(identity, w, r)
-			return
+		} else {
+			// Permission denied
+			failed(w, r, err)
 		}
-		failed(w, r)
 	})
 }
 
