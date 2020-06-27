@@ -126,7 +126,7 @@ func (auth *Authenticator) getRavenInfo(authPath string, r *http.Request) (Ident
 
 	// Mad format string, kinda like RFC3339 without the separators
 	issueTime, _ := time.Parse("20060102T150405Z", parts[ravenIssue])
-	if math.Abs(time.Now().Sub(issueTime).Hours()) < 1 {
+	if math.Abs(time.Now().Sub(issueTime).Hours()) > 1 {
 		// Raven requests are valid for only one hour
 		return Identity{}, fmt.Errorf("Raven confirmation is old")
 	}
